@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Tab Viewer — detecta .html</title>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+  <style>
+    :root{--bg:#000;--fg:#fff;--accent:#00ff99}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:'Press Start 2P',monospace}
+    *{box-sizing:border-box}
+
+    .wrap{display:flex;flex-direction:column;height:100%;gap:12px;padding:18px}
+
+    header{display:flex;gap:12px;align-items:center}
+    h1{font-size:12px;margin:0}
+
+    .controls{margin-left:auto;display:flex;gap:8px;align-items:center}
+    .btn{background:transparent;border:2px solid var(--fg);color:var(--fg);padding:10px 12px;border-radius:6px;cursor:pointer;min-width:120px;text-align:center;user-select:none}
+    .btn:active{transform:translateY(1px)}
+
+    .tabs{display:flex;gap:6px;flex-wrap:wrap}
+    .tab{padding:8px 10px;border:2px solid var(--fg);border-bottom:4px solid var(--fg);background:rgba(255,255,255,0.02);cursor:pointer;display:flex;gap:8px;align-items:center}
+    .tab.active{background:var(--fg);color:var(--bg)}
+    .tab .close{font-size:10px;padding:2px 6px;border-left:1px solid rgba(0,0,0,0.2);cursor:pointer}
+
+    main{flex:1;border:2px solid var(--fg);overflow:hidden}
+    iframe{width:100%;height:100%;border:0;background:#fff}
+
+    .hint{font-size:10px;opacity:0.8}
+
+    .dropzone{border:2px dashed rgba(255,255,255,0.12);padding:12px;text-align:center}
+
+    @media (max-width:640px){.btn{min-width:90px;padding:8px}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Tab Viewer — detecta outros .html</h1>
+
+      <div class="controls">
+        <label class="btn" id="btn-scan">Tentar detectar (.html)</label>
+        <label class="btn" id="btn-add">Adicionar arquivos</label>
+        <input id="file-input" type="file" accept="text/html" multiple style="display:none">
+        <div class="hint">Dica: em servidores com listagem (Apache/nginx) o botão "Tentar detectar" pode achar arquivos automaticamente. Se rodando localmente via file://, use "Adicionar arquivos".</div>
+      </div>
+    </header>
+
+    <div class="tabs" id="tabs"></div>
+
+    <div class="dropzone" id="dropzone">Arraste arquivos .html aqui ou use "Adicionar arquivos"</div>
+
+    <main id="viewer">
+      <iframe id="frame" sandbox="allow-scripts allow-same-origin"></iframe>
+    </main>
+  </div>
+
+  <script>
+    // --- SOUND: simple short click via WebAudio ---
+    const AudioPlayer = (()=>{
+      const ctx = new (window.AudioContext||window.webkitAudioContext)();
+      function click(){
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = 'square';
+        o.frequency.value = 800;
+        g.gain.value = 0.000001;
+        o.connect(g); g.connect(ctx.destination);
+        const now = ctx.currentTime;
+        g.gain.setValueAtTime(0.000001, now);
+        g.gain.exponentialRampToValueAtTime(0.08, now + 0.005);
+        g.gain.exponentialRampToValueAtTime(0.00001, now + 0.09);
+        o.start(now);
+        o.stop(now + 0.1);
+      }
+      return {click}
+    })();
+
+    // --- App state ---
+    const tabsEl = document.getElementById('tabs');
+    const frame = document.getElementById('frame');
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('file-input');
+
+    const state = {tabs:[], activeId:null}
+
+    function makeId(){return 't'+Math.random().toString(36).slice(2,9)}
+
+    function renderTabs(){
+      tabsEl.innerHTML = '';
+      for(const t of state.tabs){
+        const el = document.createElement('div'); el.className='tab'; el.dataset.id=t.id; el.textContent = t.name;
+        if(t.id===state.activeId){el.classList.add('active')}
+        const close = document.createElement('span'); close.className='close'; close.textContent='×';
+        close.title='Fechar aba';
+        close.onclick = (e)=>{e.stopPropagation(); removeTab(t.id)};
+        el.appendChild(close);
+        el.onclick = ()=>{AudioPlayer.click(); activateTab(t.id)};
+        tabsEl.appendChild(el);
+      }
+    }
+
+    function activateTab(id){
+      const t = state.tabs.find(x=>x.id===id); if(!t) return;
+      state.activeId = id; renderTabs();
+      // if it's a blob URL keep it, otherwise load relative path
+      frame.src = t.url;
+    }
+
+    function addTab(name,url,keepActive=true){
+      const id = makeId();
+      state.tabs.push({id,name,url});
+      renderTabs();
+      if(keepActive) activateTab(id);
+    }
+
+    function removeTab(id){
+      const i = state.tabs.findIndex(x=>x.id===id); if(i===-1) return;
+      const wasActive = state.tabs[i].id===state.activeId;
+      // revoke blob URL if it is one
+      try{const u=state.tabs[i].url; if(u.startsWith('blob:')) URL.revokeObjectURL(u);}catch(e){}
+      state.tabs.splice(i,1);
+      if(wasActive){ if(state.tabs.length) activateTab(state.tabs[0].id); else {state.activeId=null; frame.src='about:blank'} }
+      renderTabs();
+    }
+
+    // --- Drag & drop / file input ---
+    dropzone.addEventListener('dragover',e=>{e.preventDefault(); dropzone.style.opacity=0.8});
+    dropzone.addEventListener('dragleave',e=>{dropzone.style.opacity=1});
+    dropzone.addEventListener('drop',e=>{
+      e.preventDefault(); dropzone.style.opacity=1;
+      const files = Array.from(e.dataTransfer.files).filter(f=>f.name.endsWith('.html')||f.type==='text/html');
+      if(files.length===0) return alert('Nenhum .html detectado no arraste.');
+      files.forEach(f=>{const url = URL.createObjectURL(f); addTab(f.name,url)});
+    });
+
+    document.getElementById('btn-add').addEventListener('click',()=>fileInput.click());
+    fileInput.addEventListener('change',e=>{
+      const files = Array.from(e.target.files).filter(f=>f.name.endsWith('.html')||f.type==='text/html');
+      if(files.length===0) return alert('Nenhum .html selecionado.');
+      files.forEach(f=>{const url = URL.createObjectURL(f); addTab(f.name,url)});
+      fileInput.value='';
+    });
+
+    // --- Try to detect .html by fetching directory listing ---
+    document.getElementById('btn-scan').addEventListener('click',async ()=>{
+      AudioPlayer.click();
+      const base = window.location.pathname.replace(/\/[^/]*$/, '/') || './';
+      try{
+        // Try to request the current folder (works if server returns directory listing)
+        const resp = await fetch(base, {credentials:'same-origin'});
+        const text = await resp.text();
+        // look for href links ending with .html
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(text,'text/html');
+        const anchors = Array.from(doc.querySelectorAll('a'));
+        const found = anchors.map(a=>a.getAttribute('href')).filter(h=>h && h.match(/\.html?($|\?)/i)).map(h=>h.split('#')[0]).filter((v,i,a)=>a.indexOf(v)===i);
+        if(found.length===0) throw new Error('Nada encontrado via listagem');
+        // normalize relative URLs
+        found.forEach(h=>{
+          const url = new URL(h, window.location).toString();
+          const name = h.replace(/.*\//,'');
+          addTab(name,url);
+        });
+      }catch(err){
+        // fallback: inform user
+        alert('Não foi possível detectar automaticamente. Isso é normal se você estiver abrindo o arquivo com file:// ou se o servidor não mostrar listagens. Use "Adicionar arquivos" ou rode um servidor simples (ex: python -m http.server).');
+      }
+    });
+
+    // --- keyboard: close tab with Ctrl+W, switch with Ctrl+Tab ---
+    window.addEventListener('keydown',e=>{
+      if(e.ctrlKey && e.key.toLowerCase()==='w'){
+        e.preventDefault(); if(state.activeId) removeTab(state.activeId);
+      }
+      if(e.ctrlKey && e.key==='Tab'){
+        e.preventDefault(); if(state.tabs.length){
+          const idx = state.tabs.findIndex(x=>x.id===state.activeId); const next = (idx+1)%state.tabs.length; activateTab(state.tabs[next].id);
+        }}
+    });
+
+    // --- small demo: if the page was opened with ?demo=1 add example tabs ---
+    if(location.search.includes('demo=1')){
+      addTab('exemplo-1.html', 'https://example.com', true);
+    }
+
+    // --- initial hint: if there are query params listing files, load them (e.g. ?files=a.html,b.html) ---
+    (function loadFromQuery(){
+      const p = new URLSearchParams(location.search);
+      if(p.has('files')){
+        const list = p.get('files').split(',').map(s=>s.trim()).filter(Boolean);
+        list.forEach(h=>{const url = new URL(h, location).toString(); addTab(h.replace(/.*\//,''),url)});
+      }
+    })();
+
+  </script>
+</body>
+</html>
